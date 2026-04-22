@@ -35,12 +35,24 @@ def scan_participants(data_root: str = cfg.DATA_ROOT) -> List[Dict[str, str]]:
         ``group`` (``"ET"`` or ``"Control"``), and ``filepath`` (absolute path to the CSV).
     """
     records: List[Dict[str, str]] = []
+    if not os.path.isdir(data_root):
+        logger.error("DATA_ROOT does not exist or is not a directory: %s", data_root)
+        return records
 
-    for folder in sorted(os.listdir(data_root)):
-        folder_path = os.path.join(data_root, folder)
-        if not os.path.isdir(folder_path):
-            continue
+    # Support both legacy flat structure and newer grouped structure:
+    #   flat:   .../Control-001/...
+    #   grouped:.../Control/Control-001/... and .../Tremor/ET-001/...
+    participant_dirs: Dict[str, str] = {}
+    for root, dirs, _files in os.walk(data_root):
+        for dirname in dirs:
+            clean = _strip_unicode(dirname)
+            if not _parse_folder_name(clean):
+                continue
+            dir_path = os.path.join(root, dirname)
+            participant_dirs[os.path.normcase(os.path.abspath(dir_path))] = dir_path
 
+    for folder_path in sorted(participant_dirs.values()):
+        folder = os.path.basename(folder_path)
         clean = _strip_unicode(folder)
         parsed = _parse_folder_name(clean)
         if not parsed:
@@ -48,7 +60,7 @@ def scan_participants(data_root: str = cfg.DATA_ROOT) -> List[Dict[str, str]]:
 
         for group, patient_id in parsed:
             # Group files by device prefix to deduplicate appended tests
-            patient_files = {}
+            patient_files: Dict[str, Dict[str, Any]] = {}
 
             # Walk recursively to find all Fork CSVs
             for root, _dirs, files in os.walk(folder_path):
@@ -61,10 +73,13 @@ def scan_participants(data_root: str = cfg.DATA_ROOT) -> List[Dict[str, str]]:
 
                     # Extract prefix (device identifier)
                     prefix = "fork"
-                    if lower.startswith("fork1"): prefix = "fork1"
-                    elif lower.startswith("fork2"): prefix = "fork2"
-                    elif lower.startswith("fork_"): prefix = "fork_"
-                    
+                    if lower.startswith("fork1"):
+                        prefix = "fork1"
+                    elif lower.startswith("fork2"):
+                        prefix = "fork2"
+                    elif lower.startswith("fork_"):
+                        prefix = "fork_"
+
                     if prefix == "fork_" and not cfg.INCLUDE_AMBIGUOUS_FORK:
                         continue
 
@@ -77,15 +92,17 @@ def scan_participants(data_root: str = cfg.DATA_ROOT) -> List[Dict[str, str]]:
                             "patient_id": patient_id,
                             "group": group,
                             "filepath": filepath,
-                            "size": size
+                            "size": size,
                         }
-            
+
             for dev_data in patient_files.values():
-                records.append({
-                    "patient_id": dev_data["patient_id"],
-                    "group": dev_data["group"],
-                    "filepath": dev_data["filepath"],
-                })
+                records.append(
+                    {
+                        "patient_id": dev_data["patient_id"],
+                        "group": dev_data["group"],
+                        "filepath": dev_data["filepath"],
+                    }
+                )
 
     logger.info("Scanned %d unique Fork devices across participants", len(records))
     return records
@@ -138,11 +155,8 @@ def load_crf_scores(
 ) -> Optional[Dict[str, float]]:
     """Return clinical scores for a patient from the CRF Excel.
 
-    For the **local score** the function averages the scooping and stabbing
-    fork columns for the relevant hand.  For **Bilateral** tremor all four
-    fork columns are averaged.
-
-    Control patients receive ``local_score = 0`` and ``global_score = 0``.
+    Returns all four per-hand-per-movement cells plus the averaged ``local_score``.
+    Controls receive all tremor scores = 0.
 
     Args:
         patient_id: Three-digit string, e.g. ``"006"``.
@@ -150,22 +164,28 @@ def load_crf_scores(
         group: ``"ET"`` or ``"Control"``.
 
     Returns:
-        Dict with ``local_score``, ``global_score``, ``age``, and ``gender``, or *None* if the
-        patient cannot be found or scores are missing.
+        Dict with keys:
+            ``local_score``  – avg of relevant scoop+stab cells (backward compat)
+            ``global_score`` – Subtotal B Extended
+            ``rt_scoop``, ``lf_scoop``, ``rt_stab``, ``lf_stab`` – individual cells
+            ``age``, ``gender``
+        or *None* if the patient cannot be found or scores are missing.
     """
+    _zero_scores = {
+        "rt_scoop": 0.0, "lf_scoop": 0.0,
+        "rt_stab": 0.0, "lf_stab": 0.0,
+    }
+
     if group == "Control":
-        # Missing data imputation logic: Controls might not have CRF entries, so we need to fetch them
-        # if possible. Assuming controls are also in the CRF. If they have age/gender, we want it.
-        # But `tremor_hand` logic breaks for controls. So let's just try to get demographics if possible.
         crf = _get_crf_data()
         record = crf.get(patient_id)
-        if record is not None:
-            return {
-                "local_score": 0.0, "global_score": 0.0,
-                "age": record.get("age", 65.0),
-                "gender": record.get("gender", 0.0)
-            }
-        return {"local_score": 0.0, "global_score": 0.0, "age": 65.0, "gender": 0.0}
+        base = {
+            "local_score": 0.0, "global_score": 0.0,
+            "age": record.get("age", 65.0) if record else 65.0,
+            "gender": record.get("gender", 0.0) if record else 0.0,
+        }
+        base.update(_zero_scores)
+        return base
 
     crf = _get_crf_data()
     record = crf.get(patient_id)
@@ -175,16 +195,19 @@ def load_crf_scores(
 
     tremor_hand = record["tremor_hand"]
 
+    # Individual 4-cell values (None-safe)
+    rt_scoop = record.get("rt_fork_scoop")
+    lf_scoop = record.get("lf_fork_scoop")
+    rt_stab = record.get("rt_fork_stab")
+    lf_stab = record.get("lf_fork_stab")
+
     # Local score: average scooping + stabbing for the relevant hand(s)
     if tremor_hand == "Right":
-        vals = [record["rt_fork_scoop"], record["rt_fork_stab"]]
+        vals = [rt_scoop, rt_stab]
     elif tremor_hand == "Left":
-        vals = [record["lf_fork_scoop"], record["lf_fork_stab"]]
+        vals = [lf_scoop, lf_stab]
     elif tremor_hand == "Bilateral":
-        vals = [
-            record["rt_fork_scoop"], record["lf_fork_scoop"],
-            record["rt_fork_stab"], record["lf_fork_stab"],
-        ]
+        vals = [rt_scoop, lf_scoop, rt_stab, lf_stab]
     else:
         logger.warning(
             "Patient %s: unknown tremor hand '%s' — skipping",
@@ -195,8 +218,7 @@ def load_crf_scores(
     valid = [v for v in vals if v is not None]
     if not valid:
         logger.warning(
-            "Patient %s: all fork score columns are None — skipping",
-            patient_id,
+            "Patient %s: all fork score columns are None — skipping", patient_id,
         )
         return None
     local_score = mean(valid)
@@ -209,10 +231,14 @@ def load_crf_scores(
         return None
 
     return {
-        "local_score": float(local_score), 
+        "local_score": float(local_score),
         "global_score": float(global_score),
+        "rt_scoop": float(rt_scoop) if rt_scoop is not None else 0.0,
+        "lf_scoop": float(lf_scoop) if lf_scoop is not None else 0.0,
+        "rt_stab": float(rt_stab) if rt_stab is not None else 0.0,
+        "lf_stab": float(lf_stab) if lf_stab is not None else 0.0,
         "age": record.get("age", 65.0),
-        "gender": record.get("gender", 0.0)
+        "gender": record.get("gender", 0.0),
     }
 
 

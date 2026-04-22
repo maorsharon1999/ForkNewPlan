@@ -116,13 +116,18 @@ def plot_pca(
         label_col: Column to colour by (e.g. ``"is_et"``).
         filename: Output filename.
     """
-    meta_cols = {"patient_id", "group", "hand", "local_score",
-                 "global_score", "is_et"}
+    meta_cols = {"patient_id", "group", "hand", "local_score", "global_score", "is_et"}
     feat_cols = [c for c in features_df.columns if c not in meta_cols]
 
     from sklearn.impute import SimpleImputer
     
-    X = features_df[feat_cols].values
+    # Keep only numeric feature columns; movement_type and similar labels may be strings.
+    X_df = features_df[feat_cols].select_dtypes(include=[np.number])
+    if X_df.shape[1] == 0:
+        logger.warning("PCA plot skipped: no numeric feature columns available.")
+        return
+
+    X = X_df.values
     imputer = SimpleImputer(strategy='mean')
     X_imputed = imputer.fit_transform(X)
     
@@ -267,6 +272,53 @@ def plot_bland_altman(
     ax.set_ylabel("True − Predicted")
     ax.set_title(title)
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    _savefig(fig, filename)
+
+
+def plot_cluster_pca(
+    features_df: pd.DataFrame,
+    cluster_col: str = "movement_type",
+    filename: str = "pca_movement_clusters.png",
+) -> None:
+    """2-D PCA scatter coloured by movement-type cluster label.
+
+    Args:
+        features_df: DataFrame with feature columns + a cluster label column.
+        cluster_col: Column containing cluster labels (e.g. "movement_type").
+        filename: Output filename.
+    """
+    meta_cols = {"patient_id", "group", "hand", "local_score",
+                 "global_score", "is_et", "movement_type",
+                 "rt_scoop", "lf_scoop", "rt_stab", "lf_stab"}
+    feat_cols = [c for c in features_df.columns if c not in meta_cols]
+    if cluster_col not in features_df.columns or not feat_cols:
+        return
+
+    from sklearn.impute import SimpleImputer
+
+    X = features_df[feat_cols].values
+    imputer = SimpleImputer(strategy="mean")
+    X_s = StandardScaler().fit_transform(imputer.fit_transform(X))
+    pca = PCA(n_components=2)
+    comp = pca.fit_transform(X_s)
+
+    labels = features_df[cluster_col].values
+    unique_labels = sorted(set(labels))
+    colors = plt.cm.tab10.colors
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for i, lbl in enumerate(unique_labels):
+        mask = labels == lbl
+        ax.scatter(
+            comp[mask, 0], comp[mask, 1],
+            label=str(lbl), alpha=0.7, s=30,
+            color=colors[i % len(colors)],
+        )
+    ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%})")
+    ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.1%})")
+    ax.set_title("PCA — movement-type clusters")
+    ax.legend(title=cluster_col, fontsize=9)
     fig.tight_layout()
     _savefig(fig, filename)
 
