@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile config.py)",
+      "Bash(python -m py_compile preprocessing.py)",
+      "Bash(python -m py_compile handedness.py)",
+      "Bash(python -m py_compile movement_classifier.py)",
+      "Bash(python -m py_compile data_loader.py)",
+      "Bash(echo \"exit $?\")",
+      "PowerShell(cd \"C:\\\\Users\\\\maor1\\\\Desktop\\\\gitnewplan\\\\ForkNewPlan\"; python -m py_compile config.py; Write-Host \"config exit: $LASTEXITCODE\"; python -m py_compile preprocessing.py; Write-Host \"preprocessing exit: $LASTEXITCODE\")",
+      "PowerShell(Get-Command *)",
+      "PowerShell(py *)",
+      "PowerShell($path = \"C:\\\\Users\\\\maor1\\\\Desktop\\\\fork\\\\New Data\\\\משתתפים\"; [System.IO.Directory]::GetDirectories\\($path\\) | Select-Object -First 10)"
+    ]
+  }
+}

@@ -72,6 +72,8 @@ except ImportError:
 META_COLS = [
     "patient_id", "group", "hand", "local_score",
     "global_score", "is_et",
+    # bucketed regression extras (not features)
+    "movement_type", "rt_scoop", "lf_scoop", "rt_stab", "lf_stab",
 ]
 
 
@@ -949,6 +951,187 @@ def run_shap_analysis(
         logger.info("    %2d. %-30s  %.4f", i + 1, feat, val)
 
     return importance
+
+
+# ── Bucketed regression (Right/Left × Scoop/Stab) ────────────────────────
+
+_BUCKET_TARGET_MAP = {
+    ("Right", "scoop"): "rt_scoop",
+    ("Left",  "scoop"): "lf_scoop",
+    ("Right", "stab"):  "rt_stab",
+    ("Left",  "stab"):  "lf_stab",
+}
+
+
+def run_bucketed_regression(
+    features_df: pd.DataFrame,
+) -> Dict[str, Any]:
+    """Run per-bucket LOSO CV regression with independent per-bucket RFE.
+
+    Buckets: (hand, movement_type) ∈ {Right, Left} × {scoop, stab}.
+    Each bucket's regression target matches the corresponding CRF cell.
+    RFE is run independently for each bucket (scoop and stab have different
+    biomechanics and should not share a feature set).
+
+    Sparsity fallback:
+        < MIN_BUCKET_PATIENTS patients → bucket skipped (logged).
+
+    Args:
+        features_df: DataFrame that must contain columns ``hand``,
+            ``movement_type``, ``rt_scoop``, ``lf_scoop``, ``rt_stab``,
+            ``lf_stab``, ``patient_id``, ``group``, plus feature columns.
+
+    Returns:
+        Dict with keys ``"{hand}_{movement_type}"`` → results dict,
+        and ``"{hand}_{movement_type}_features"`` → selected feature list.
+    """
+    et_df = features_df[features_df["group"] == "ET"].copy()
+
+    required = {"hand", "movement_type", "rt_scoop", "lf_scoop", "rt_stab", "lf_stab"}
+    missing = required - set(et_df.columns)
+    if missing:
+        logger.warning(
+            "run_bucketed_regression: missing columns %s — skipping", missing
+        )
+        return {}
+
+    results: Dict[str, Any] = {}
+    feat_cols = _feature_cols(et_df)
+
+    for (hand, movement_type), target_col in _BUCKET_TARGET_MAP.items():
+        bucket_key = f"{hand}_{movement_type}"
+        bucket_df = et_df[
+            (et_df["hand"] == hand) & (et_df["movement_type"] == movement_type)
+        ].copy()
+
+        if len(bucket_df) == 0:
+            logger.info("Bucket %s: no samples", bucket_key)
+            continue
+
+        n_patients = bucket_df["patient_id"].nunique()
+        logger.info(
+            "Bucket %s: %d cycles from %d patients (target=%s)",
+            bucket_key, len(bucket_df), n_patients, target_col,
+        )
+
+        if n_patients < cfg.MIN_BUCKET_PATIENTS:
+            logger.warning(
+                "Bucket %s: %d patients < MIN_BUCKET_PATIENTS=%d — skipping",
+                bucket_key, n_patients, cfg.MIN_BUCKET_PATIENTS,
+            )
+            results[bucket_key] = {"status": f"sparse ({n_patients} patients)"}
+            continue
+
+        X = bucket_df[feat_cols].copy().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        y = bucket_df[target_col].copy()
+        groups = bucket_df["patient_id"].copy()
+
+        valid = y.notna()
+        X = X[valid].reset_index(drop=True)
+        y = y[valid].reset_index(drop=True)
+        groups = groups[valid].reset_index(drop=True)
+        bucket_df_valid = bucket_df[valid].reset_index(drop=True)
+
+        if len(X) < cfg.MIN_BUCKET_PATIENTS:
+            logger.warning(
+                "Bucket %s: only %d valid samples — skipping", bucket_key, len(X)
+            )
+            continue
+
+        cv = _build_cv(groups, task="regression")
+
+        # Independent RFE for this bucket
+        n_select = min(cfg.RFE_MIN_FEATURES, X.shape[1])
+        rfe_info = RFE(
+            estimator=RandomForestRegressor(
+                n_estimators=50, max_depth=5,
+                random_state=cfg.RANDOM_STATE, n_jobs=-1,
+            ),
+            n_features_to_select=n_select,
+            step=0.1,
+        )
+        try:
+            rfe_info.fit(StandardScaler().fit_transform(X), y)
+            selected = [X.columns[i] for i in range(len(X.columns)) if rfe_info.support_[i]]
+            logger.info(
+                "Bucket %s RFE → %d features: %s", bucket_key, len(selected), selected
+            )
+            results[f"{bucket_key}_features"] = selected
+        except Exception as exc:
+            logger.warning("Bucket %s RFE failed: %s", bucket_key, exc)
+            selected = list(X.columns[:n_select])
+
+        # Regression models with pipeline (scaler + RFE + model)
+        bucket_results: Dict[str, Dict[str, float]] = {}
+        models: Dict[str, Any] = {
+            "Ridge": Ridge(alpha=1.0),
+            "RandomForest": RandomForestRegressor(
+                n_estimators=100, random_state=cfg.RANDOM_STATE
+            ),
+            "GradientBoosting": GradientBoostingRegressor(
+                n_estimators=100, max_depth=3, random_state=cfg.RANDOM_STATE
+            ),
+        }
+        if _HAS_XGB:
+            from xgboost import XGBRegressor
+            models["XGBoost"] = XGBRegressor(
+                n_estimators=100, random_state=cfg.RANDOM_STATE, verbosity=0
+            )
+
+        for name, estimator in models.items():
+            from sklearn.pipeline import Pipeline
+            from sklearn.base import clone
+
+            pipe = Pipeline([
+                ("var_thresh", VarianceThreshold()),
+                ("scaler", StandardScaler()),
+                ("rfe", RFE(
+                    estimator=RandomForestRegressor(
+                        n_estimators=50, max_depth=5,
+                        random_state=cfg.RANDOM_STATE, n_jobs=-1,
+                    ),
+                    n_features_to_select=n_select,
+                    step=0.1,
+                )),
+                ("model", estimator),
+            ])
+
+            y_pred = np.zeros(len(y))
+            try:
+                cv_splitter = (
+                    cv.split(X, y, groups)
+                    if hasattr(cv, "split")
+                    else KFold(cfg.CV_FOLDS, shuffle=True,
+                               random_state=cfg.RANDOM_STATE).split(X, y)
+                )
+                for train_idx, test_idx in cv_splitter:
+                    fold_pipe = clone(pipe)
+                    fold_pipe.fit(X.iloc[train_idx], y.iloc[train_idx])
+                    y_pred[test_idx] = fold_pipe.predict(X.iloc[test_idx])
+            except Exception as exc:
+                logger.warning(
+                    "Bucket %s model %s failed: %s", bucket_key, name, exc
+                )
+                continue
+
+            if cfg.PER_SEGMENT and "patient_id" in bucket_df_valid.columns:
+                y_true_agg, y_pred_agg = _aggregate_segment_predictions(
+                    bucket_df_valid, y_pred, target_col
+                )
+            else:
+                y_true_agg, y_pred_agg = y.values, y_pred
+
+            metrics = compute_regression_metrics(y_true_agg, y_pred_agg)
+            bucket_results[name] = metrics
+            logger.info(
+                "  Bucket %-18s %-20s MAE=%.3f R²=%.3f Pearson_r=%.3f",
+                bucket_key, name,
+                metrics["MAE"], metrics["R2"], metrics.get("Pearson_r", 0),
+            )
+
+        results[bucket_key] = bucket_results
+
+    return results
 
 
 # ── Calibrated classifiers ───────────────────────────────────────────────

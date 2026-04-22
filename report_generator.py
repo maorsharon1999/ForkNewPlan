@@ -45,6 +45,8 @@ _FIGURE_FILES = [
     ("SHAP Bar - Classification", "shap_bar_classification.png"),
     ("SHAP Beeswarm - Regression", "shap_beeswarm_regression.png"),
     ("SHAP Beeswarm - Classification", "shap_beeswarm_classification.png"),
+    ("PCA - Movement Clusters", "pca_movement_clusters.png"),
+    ("Cluster Inspection (from PDF, page 3 PCA)", "cluster_inspection_pca.png"),
 ]
 
 
@@ -180,6 +182,19 @@ def generate_report(
         pdf.cell(0, 7, line, ln=True)
     pdf.ln(6)
 
+    # ── Handedness Accuracy ───────────────────────────────────────────────
+    handedness_acc = metrics_dict.get("handedness_accuracy")
+    if handedness_acc is not None:
+        pdf.set_font("Helvetica", "", 11)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(
+            0, 7,
+            f"Handedness classifier LOSO accuracy: {handedness_acc:.3f} "
+            f"(target >= {0.90:.2f})",
+            ln=True,
+        )
+        pdf.ln(4)
+
     # ── Regression Results ────────────────────────────────────────────────
     _section_title(pdf, "2. Regression Results")
 
@@ -221,6 +236,61 @@ def generate_report(
             ])
         _draw_table(pdf, reg_headers, rows, reg_widths)
         pdf.ln(6)
+
+    # ── Bucketed Regression (4 buckets) ──────────────────────────────────
+    bucketed: Dict = metrics_dict.get("bucketed_regression", {})
+    if bucketed:
+        _section_title(pdf, "2b. Bucketed Regression (Hand × Movement Type)")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(
+            0, 6,
+            "Per-bucket LOSO CV regression. RFE run independently per bucket. "
+            "Target = matching CRF cell (rt_scoop / lf_scoop / rt_stab / lf_stab).",
+            ln=True,
+        )
+        pdf.ln(3)
+
+        bucket_order = [
+            "Right_scoop", "Left_scoop", "Right_stab", "Left_stab"
+        ]
+        for bkey in bucket_order:
+            bres = bucketed.get(bkey)
+            if bres is None:
+                continue
+
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 7, f"Bucket: {bkey}", ln=True)
+            pdf.ln(1)
+
+            # Selected features (if logged)
+            feat_list = bucketed.get(f"{bkey}_features", [])
+            if feat_list:
+                pdf.set_font("Helvetica", "I", 8)
+                feat_str = "Features: " + ", ".join(feat_list[:15])
+                pdf.multi_cell(0, 5, feat_str)
+                pdf.ln(1)
+
+            if isinstance(bres, dict) and "status" in bres:
+                pdf.set_font("Helvetica", "", 9)
+                pdf.cell(0, 6, f"  Status: {bres['status']}", ln=True)
+                pdf.ln(3)
+                continue
+
+            if isinstance(bres, dict) and bres:
+                rows = []
+                for model, m in bres.items():
+                    if not isinstance(m, dict):
+                        continue
+                    rows.append([
+                        model,
+                        _safe_fmt(m.get("MAE")),
+                        _safe_fmt(m.get("RMSE")),
+                        _safe_fmt(m.get("R2")),
+                        _safe_fmt(m.get("Pearson_r")),
+                    ])
+                if rows:
+                    _draw_table(pdf, reg_headers, rows, reg_widths)
+            pdf.ln(4)
 
     # ── Classification Results ────────────────────────────────────────────
     _section_title(pdf, "3. Classification Results")
