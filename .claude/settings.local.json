@@ -11,7 +11,14 @@
       "PowerShell(cd \"C:\\\\Users\\\\maor1\\\\Desktop\\\\gitnewplan\\\\ForkNewPlan\"; python -m py_compile config.py; Write-Host \"config exit: $LASTEXITCODE\"; python -m py_compile preprocessing.py; Write-Host \"preprocessing exit: $LASTEXITCODE\")",
       "PowerShell(Get-Command *)",
       "PowerShell(py *)",
-      "PowerShell($path = \"C:\\\\Users\\\\maor1\\\\Desktop\\\\fork\\\\New Data\\\\משתתפים\"; [System.IO.Directory]::GetDirectories\\($path\\) | Select-Object -First 10)"
+      "PowerShell($path = \"C:\\\\Users\\\\maor1\\\\Desktop\\\\fork\\\\New Data\\\\משתתפים\"; [System.IO.Directory]::GetDirectories\\($path\\) | Select-Object -First 10)",
+      "Bash(python main.py)",
+      "Bash(python dynamic_simulation.py)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 21056 /F)",
+      "Bash(taskkill /PID 4788 /F)",
+      "PowerShell(Stop-Process *)",
+      "Bash(git add *)"
     ]
   }
 }

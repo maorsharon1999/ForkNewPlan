@@ -15,6 +15,8 @@ _DATA_BASE = r"C:\Users\maor1\Desktop\fork\New Data"
 DATA_ROOT = os.path.join(_DATA_BASE, "משתתפים")
 CRF_PATH = os.path.join(_DATA_BASE, "HIT Study CRF - No personal Data.xlsx")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output", "figures")
+ANNOTATED_CSV_DIR = os.path.join(SCRIPT_DIR, "output", "annotated_csvs")
+RUN_SIMULATION_EXPORT = True   # set False to skip simulator-CSV export
 
 # ---------------------------------------------------------------------------
 # CRF Excel — sheet names

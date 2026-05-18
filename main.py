@@ -53,6 +53,7 @@ from ml_pipeline import (
 )
 import visualization as viz
 from report_generator import generate_report
+from simulation_adapter import write_annotated_csvs
 
 logger: logging.Logger
 
@@ -307,6 +308,23 @@ def main() -> None:
             "Only %d cycles — need ≥%d for GMM clustering. "
             "All cycles labelled 'unknown'.",
             len(all_cycle_dfs), min_fit_cycles,
+        )
+
+    # ── STAGE 4d: Export annotated CSVs for dynamic 3D simulator ─────────
+    if getattr(cfg, "RUN_SIMULATION_EXPORT", False):
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("STAGE 4d: Exporting annotated CSVs for dynamic_simulation…")
+        logger.info("=" * 60)
+        write_annotated_csvs(
+            all_cycle_records=all_cycle_records,
+            movement_types=movement_types,
+            hand_clf=hand_clf,
+            out_dir=cfg.ANNOTATED_CSV_DIR,
+        )
+        logger.info(
+            "Run `python dynamic_simulation.py` to open the 3D viewer "
+            "(http://127.0.0.1:8050).",
         )
 
     # ── STAGE 5: Feature extraction (second pass) ────────────────────────
