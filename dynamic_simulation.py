@@ -20,7 +20,7 @@ from plotly.subplots import make_subplots
 from dash import Input, Output, Patch, State, callback_context, dcc, html, dash_table
 
 import config as cfg
-import human_body
+import body_model
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
 
@@ -379,7 +379,7 @@ def _static_traces(table_z, plate_xy, mouth, dominant_hand="Right"):
     rest_hand_pos = np.array([-sign * REST_HAND_DX, REST_HAND_Y, table_z + 0.025])
 
     traces = []
-    traces.extend(human_body.static_body_traces(tuple(mouth), dominant_hand, table_z))
+    traces.extend(body_model.body_traces(mouth, dominant_hand, table_z))
 
     traces.append(go.Mesh3d(
         x=[TABLE_X[0], TABLE_X[1], TABLE_X[1], TABLE_X[0]],
@@ -468,8 +468,11 @@ def build_figure(tip_xyz, hand_xyz, fork_dir, table_z, plate_xy, mouth,
             x=trail[:, 0], y=trail[:, 1], z=trail[:, 2],
             mode="lines", line=dict(color="lightgray", width=2), name="Trail"))
 
-    traces.extend(human_body.arm_traces(
-        tuple(mouth), dominant_hand, table_z, tuple(sensor)))
+    traces.append(go.Scatter3d(
+        x=[dom_shoulder[0], sensor[0]], y=[dom_shoulder[1], sensor[1]],
+        z=[dom_shoulder[2], sensor[2]],
+        mode="lines", line=dict(color=SKIN_COLOR, width=8),
+        showlegend=False, name="_active_arm"))
 
     traces.append(go.Scatter3d(
         x=[sensor[0]], y=[sensor[1]], z=[sensor[2]],
